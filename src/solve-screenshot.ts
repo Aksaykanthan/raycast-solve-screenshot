@@ -12,6 +12,9 @@ import { runCommand } from "./utils/shell";
 
 interface Preferences {
   solver: "claude" | "codex";
+  screenshotMode: "full" | "area";
+  systemPrompt: string;
+  showProgress: boolean;
 }
 
 type Solver = Preferences["solver"];
@@ -85,49 +88,87 @@ export default async function main() {
   const preferences = getPreferenceValues<Preferences>();
   const solver = preferences.solver || "codex";
   const solverConfig = SOLVERS[solver];
+  const screenshotMode = preferences.screenshotMode || "full";
+  const showProgress = preferences.showProgress !== false;
 
   const tempFilePath = path.join(
     os.tmpdir(),
     `raycast-screenshot-${Date.now()}.png`,
   );
 
-  const toast = await showToast({
-    style: Toast.Style.Animated,
-    title: "Taking screenshot...",
-    message: "Capturing full screen",
-  });
+  // progress() only shows/mutates a toast when the preference is on;
+  // errors always surface regardless of the setting.
+  let toast: Toast | undefined;
+  async function progress(
+    style: Toast.Style,
+    title: string,
+    message?: string,
+  ): Promise<void> {
+    if (!showProgress) return;
+    if (!toast) {
+      toast = await showToast({ style, title, message });
+    } else {
+      toast.style = style;
+      toast.title = title;
+      toast.message = message;
+    }
+  }
+  async function failToast(title: string, message: string): Promise<void> {
+    if (toast) {
+      toast.style = Toast.Style.Failure;
+      toast.title = title;
+      toast.message = message;
+    } else {
+      await showToast({ style: Toast.Style.Failure, title, message });
+    }
+  }
+
+  const modeLabel =
+    screenshotMode === "area" ? "Select area to capture" : "Capturing full screen";
+  await progress(Toast.Style.Animated, "Taking screenshot...", modeLabel);
 
   try {
-    // Run macOS screencapture silent full screen mode
-    await runCommand("screencapture", ["-x", tempFilePath]);
+    const captureArgs =
+      screenshotMode === "area"
+        ? ["-ix", tempFilePath]  // interactive region selection, no shutter sound
+        : ["-x", tempFilePath];  // full screen, no shutter sound
 
-    // Check if the screenshot was actually created
+    await runCommand("screencapture", captureArgs);
+
+    // Check if the screenshot was actually created (user may cancel area selection)
     if (!fs.existsSync(tempFilePath)) {
-      toast.style = Toast.Style.Failure;
-      toast.title = "Screenshot failed";
-      toast.message = "Could not capture full screen";
+      await failToast(
+        "Screenshot cancelled",
+        screenshotMode === "area" ? "No area was selected" : "Could not capture full screen",
+      );
       return;
     }
 
-    toast.title = `Solving with ${solverConfig.displayName}...`;
-    toast.message = `Analyzing full screen and generating answer via ${solverConfig.displayName}`;
+    await progress(
+      Toast.Style.Animated,
+      `Solving with ${solverConfig.displayName}...`,
+      `Analysing screenshot via ${solverConfig.displayName}`,
+    );
 
     const binaryPath = await findExecutable(solver);
 
-    const prompt = `Solve the question in this screenshot: ${tempFilePath}. Output only the final answer as Python code. Do not include explanations, Markdown code fences, comments, labels, or any text outside the code. Do not run any commands or edit any files.`;
+    const DEFAULT_PROMPT =
+      "Solve the question in this screenshot and output only the final answer as Python code. Do not include explanations, Markdown code fences, comments, labels, or any text outside the code.";
+
+    const userPrompt = preferences.systemPrompt?.trim() || DEFAULT_PROMPT;
+    const prompt = `${userPrompt}\n\nScreenshot path: ${tempFilePath}\n\nDo not run any commands or edit any files.`;
 
     let stdout = "";
     let stderr = "";
     try {
       if (solver === "claude") {
-        // Run Claude CLI in non-interactive print mode with screenshot
-        const result = await runCommand("zsh", [
-          "-l",
-          "-c",
-          `"${binaryPath}" -p "$1" --dangerously-skip-permissions < /dev/null`,
-          "--",
-          prompt,
-        ]);
+        // Run Claude directly — no intermediate shell so HOME is never overridden,
+        // which lets claude find its credentials in ~/.claude.json.
+        const result = await runCommand(
+          binaryPath,
+          ["-p", "--dangerously-skip-permissions", prompt],
+          { env: { ...process.env, HOME: os.homedir() } },
+        );
         stdout = result.stdout;
         stderr = result.stderr;
       } else {
@@ -153,14 +194,19 @@ export default async function main() {
           .replace(/^Failed to execute "[^"]+" \(exit code \d+\): /, "")
           .trim();
 
-      // Copy the error message to clipboard so user knows why it failed
       await Clipboard.copy(cleanError);
-
-      toast.style = Toast.Style.Failure;
-      toast.title = "Failed to solve";
-      toast.message = "Error copied to clipboard";
+      await failToast("Failed to solve", "Error copied to clipboard");
       await showHUD("Error copied to clipboard!");
       return;
+    }
+
+    // Auth errors surface as stdout text rather than a non-zero exit, so
+    // catch them before treating the output as a valid answer.
+    const notLoggedIn = /not logged in|please run.*\/login/i;
+    if (notLoggedIn.test(stdout) || notLoggedIn.test(stderr)) {
+      throw new Error(
+        `Claude Code is not authenticated. Open a terminal and run: claude login`,
+      );
     }
 
     if (!stdout.trim()) {
@@ -169,14 +215,9 @@ export default async function main() {
       );
     }
 
-    // Copy to clipboard
     await Clipboard.copy(stdout.trim());
 
-    // Show success
-    toast.style = Toast.Style.Success;
-    toast.title = "Solved!";
-    toast.message = "Answer copied to clipboard";
-
+    await progress(Toast.Style.Success, "Solved!", "Answer copied to clipboard");
     await showHUD("Answer copied to clipboard!");
   } catch (error: unknown) {
     const err = error as Error & { stdout?: string; stderr?: string };
@@ -190,13 +231,9 @@ export default async function main() {
         .trim();
 
     await Clipboard.copy(cleanError);
-
-    toast.style = Toast.Style.Failure;
-    toast.title = "Failed to solve screenshot";
-    toast.message = "Error copied to clipboard";
+    await failToast("Failed to solve screenshot", "Error copied to clipboard");
     await showHUD("Error copied to clipboard!");
   } finally {
-    // Clean up temporary screenshot file
     if (fs.existsSync(tempFilePath)) {
       try {
         fs.unlinkSync(tempFilePath);

@@ -27,19 +27,43 @@
       "name": "solver",
       "type": "dropdown",
       "required": false,
-      "title": "Screenshot Solver",
-      "description": "Choose the AI CLI to solve screenshots.",
+      "title": "AI Solver",
+      "description": "Choose the AI CLI used to analyse the screenshot.",
       "default": "codex",
       "data": [
-        {
-          "title": "Codex",
-          "value": "codex"
-        },
-        {
-          "title": "Claude Code",
-          "value": "claude"
-        }
+        { "title": "Codex", "value": "codex" },
+        { "title": "Claude Code", "value": "claude" }
       ]
+    },
+    {
+      "name": "screenshotMode",
+      "type": "dropdown",
+      "required": false,
+      "title": "Screenshot Mode",
+      "description": "Full screen captures everything. Select Area lets you drag to pick a region.",
+      "default": "full",
+      "data": [
+        { "title": "Full Screen", "value": "full" },
+        { "title": "Select Area", "value": "area" }
+      ]
+    },
+    {
+      "name": "systemPrompt",
+      "type": "textfield",
+      "required": false,
+      "title": "System Prompt",
+      "description": "Instructions sent to the AI. Leave blank to use the default (solve the question and return Python code).",
+      "default": "",
+      "placeholder": "Solve the question and output only the final answer as Python code…"
+    },
+    {
+      "name": "showProgress",
+      "type": "checkbox",
+      "required": false,
+      "title": "Show Progress",
+      "label": "Show progress toasts while solving",
+      "description": "Display step-by-step toasts (taking screenshot, solving, copied). Errors always surface regardless of this setting.",
+      "default": true
     }
   ],
   "scripts": {
